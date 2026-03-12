@@ -258,9 +258,10 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
 
 def main():
     question = input("Enter council question: ")
-    result = run_council(question)
 
     print("\nRunning council analysis...\n")
+    result = run_council(question)
+
     for role, answer in result["responses"].items():
         print(f"\n--- {role} ---\n")
         print(answer)
@@ -268,7 +269,7 @@ def main():
     print("\n--- WEIGHTED COUNCIL METRICS ---\n")
     print(json.dumps(result["aggregate"], indent=2))
 
-    print("\nRunning critique phase...\n")
+    print("\n--- CRITIQUE PHASE ---\n")
     for role, critique in result["critiques"].items():
         print(f"\n--- {role} Critique ---\n")
         print(critique)

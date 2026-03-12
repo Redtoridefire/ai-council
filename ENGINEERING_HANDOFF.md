@@ -1,6 +1,6 @@
 # AI Council System — Engineering Handoff Document
 
-**Author:** Mike Czarnecki  
+**Author:** Mike Czarnecki
 **Purpose:** Multi-Agent AI Strategic Advisory System
 
 ## 1. Project Overview
@@ -15,237 +15,127 @@ The design goal is to replicate executive-level advisory reasoning rather than s
 
 ## 2. Current System Architecture
 
-The system currently operates in three phases:
+The system operates in three phases:
 
 ### Phase 1 — Independent Analysis
-Each agent analyzes the problem independently.
+All 11 agents analyze the problem in parallel, each returning structured JSON with `recommendation`, `confidence`, `risk_score`, `reasoning`, `risks`, and `benefits`.
 
 ### Phase 2 — Critique Phase
-Agents review the entire council's responses and challenge weaknesses.
+All 11 agents review the full set of Phase 1 responses and challenge weaknesses, overlooked risks, and contradictions — also run in parallel.
 
 ### Phase 3 — Chairman Decision
-A final synthesis agent consolidates all findings.
+Claude Sonnet synthesizes all Phase 1 responses, Phase 2 critiques, weighted aggregate metrics, evidence context, and memory context into a final recommendation.
 
 ### Architecture Flow
 
 ```text
 User Question
       ↓
-Parallel Agent Analysis
-(CISO, Engineer, Lawyer, CFO)
+RAG Evidence Retrieval (docs/ → TF-IDF → top-k chunks)
       ↓
-Devil's Advocate Risk Analysis
+SQLite Memory Context (last 3 council decisions)
       ↓
-AI Reasoning Red Team
+Phase 1: Parallel Agent Analysis (11 agents)
       ↓
-Cybersecurity Red Team
+Weighted Score Aggregation (confidence, risk, leading recommendation)
       ↓
-Peer Critique Phase
+Phase 2: Parallel Critique Phase (11 agents reviewing all Phase 1 output)
       ↓
-Chairman Synthesis Decision
+Phase 3: Chairman Synthesis (Claude Sonnet)
+      ↓
+Save to SQLite Memory + Log Telemetry
 ```
 
-## 3. Current Agents
+## 3. Current Agents (11 total)
 
-The system currently includes 7 agents:
-
-1. **Chief Information Security Officer** — Strategic cyber risk analysis.
-2. **Security Engineer** — Technical feasibility and architecture analysis.
-3. **Technology Lawyer** — Regulatory and legal risk analysis.
-4. **Chief Financial Officer** — Cost, ROI, and operational risk.
-5. **Devil's Advocate Risk Analyst** — Challenges optimistic assumptions.
-6. **AI Reasoning Red Team** — Identifies logical flaws and reasoning gaps.
-7. **Cybersecurity Red Team** — Identifies attack paths and exploitation scenarios.
+| Role | Default Provider | Weight |
+|---|---|---|
+| Chief Information Security Officer | Claude | 1.4 |
+| Security Engineer | OpenAI | 1.3 |
+| Technology Lawyer | Claude | 1.1 |
+| Chief Financial Officer | OpenAI | 1.1 |
+| Devil's Advocate Risk Analyst | OpenAI | 1.0 |
+| AI Reasoning Red Team | Claude | 1.0 |
+| Cybersecurity Red Team | OpenAI | 1.4 |
+| Cloud Architect | OpenAI | 1.2 |
+| Threat Intelligence Analyst | Claude | 1.3 |
+| Compliance Officer | Claude | 1.2 |
+| AI Safety Officer | Claude | 1.2 |
 
 ## 4. Model Routing
 
-Different agents can use different LLM providers.
+Different agents use different LLM providers. The router supports:
 
-Current router supports:
+| Provider | Use | Env var |
+|---|---|---|
+| Claude (Haiku) | Agent reasoning | `ANTHROPIC_API_KEY` |
+| Claude (Sonnet) | Chairman synthesis | `ANTHROPIC_API_KEY` |
+| OpenAI (gpt-4o-mini) | Engineering / financial analysis | `OPENAI_API_KEY` |
+| Gemini (gemini-2.0-flash) | Optional routing target | `GEMINI_API_KEY` |
+| Ollama | Local model inference | `OLLAMA_URL`, `OLLAMA_MODEL` |
 
-| Provider | Use |
-|---|---|
-| Claude | Reasoning / Chairman |
-| OpenAI | Engineering / financial analysis |
-| Gemini | Optional model fallback |
+Set `COUNCIL_FORCE_PROVIDER=ollama` (or any provider) to route all agents to a single provider.
 
-## 5. Current Code Structure
+## 5. Code Structure
 
 ```text
 ai-council/
-│
-├── council.py
-├── model_router.py
-├── claude_client.py
-├── requirements.txt
-└── README.md
+├── council.py          # Main orchestration: Phase 1 → Phase 2 → Chairman
+├── claude_client.py    # Anthropic SDK wrapper (Haiku for agents, Sonnet for chairman)
+├── model_router.py     # Multi-provider routing with thread-safe rate limiting
+├── voting.py           # Structured response parsing + weighted score aggregation
+├── memory_store.py     # SQLite persistence of council decisions
+├── rag.py              # TF-IDF evidence retrieval from docs/ directory
+├── security.py         # API key redaction + SHA256 pseudonymization
+├── telemetry.py        # SQLite telemetry event logging
+├── telegram_bot.py     # Telegram bot interface (/council command)
+├── dashboard.py        # Streamlit visualization dashboard
+└── requirements.txt
 ```
 
-### `council.py`
-Main orchestration script.
+## 6. Implemented Features
 
-Responsibilities:
-- run agent analysis
-- run critique phase
-- collect responses
-- generate chairman decision
+- Multi-agent parallel reasoning (Phase 1 + Phase 2 via `ThreadPoolExecutor`)
+- Structured JSON output from agents (`recommendation`, `confidence`, `risk_score`, etc.)
+- Weighted council voting with per-role weights
+- RAG evidence injection from `docs/` (`.md`, `.txt`, `.json`, `.pdf` via TF-IDF + cosine similarity)
+- SQLite-backed council memory (last 3 decisions injected into prompts)
+- Chairman synthesis via Claude Sonnet
+- Telegram bot interface (`/council <question>`)
+- Local model support via Ollama-compatible endpoint
+- Streamlit dashboard (confidence, risk, disagreement trends, telemetry)
+- Provider-level rate limiting (thread-safe, default: 30 req/60s)
+- Secret redaction in telemetry logs
+- Telemetry event logging (duration, evidence chunk count, confidence, risk)
 
-Uses parallel execution via `ThreadPoolExecutor`.
+## 7. Rate Limiting
 
-### `model_router.py`
-Handles routing prompts to different LLM providers.
+Rate limiting is applied per-provider using a sliding window. The default is **30 requests per 60 seconds** per provider, which comfortably covers a full council run:
 
-Currently supports:
-- Claude
-- OpenAI
-- Gemini
+- Phase 1: 6 Claude + 5 OpenAI requests
+- Phase 2: 6 Claude + 5 OpenAI requests
+- Chairman: 1 Claude request
+- **Total: 13 Claude + 10 OpenAI per run**
 
-Future versions should support:
-- Ollama
-- Local LLMs
-- Azure OpenAI
-
-### `claude_client.py`
-Handles calls to Anthropic models.
-
-Current configuration:
-- Agent model: `claude-haiku-4-5-20251001`
-- Chairman model: `claude-sonnet-4-6`
-
-## 6. Current Features Implemented
-
-- ✔ Multi-agent reasoning
-- ✔ Parallel agent execution
-- ✔ Debate-style reasoning
-- ✔ Critique phase
-- ✔ Adversarial reasoning agent
-- ✔ Cybersecurity red team agent
-- ✔ Multi-model routing
-- ✔ Chairman synthesis
-
-## 7. Known Limitations
-
-The current system has several limitations:
-- No Knowledge Base: Agents only rely on the prompt; no document ingestion yet.
-- No Memory: The council does not remember previous decisions.
-- No Confidence Aggregation: Confidence scores are not aggregated across agents.
-- No Weighted Voting: Agents currently contribute equally.
-- No Structured Output: Responses are free-form text.
-- No Telemetry: No logging or analytics.
-
-## 8. Priority Future Upgrades
-
-### Upgrade 1 — Evidence Injection (RAG)
-Most important next feature.
-
-Agents should be able to analyze real documents.
-
-Example folder:
-
-```text
-docs/
-   threat_model.md
-   cloud_architecture.pdf
-   wiz_scan_results.json
+Override via environment:
+```bash
+export COUNCIL_RATE_LIMIT_REQUESTS=30
+export COUNCIL_RATE_LIMIT_WINDOW_SECONDS=60
 ```
 
-System workflow:
+## 8. Security Considerations
 
-```text
-documents
-   ↓
-vector embeddings
-   ↓
-semantic retrieval
-   ↓
-inject evidence into prompts
-```
+- API keys are never logged; telemetry metadata is redacted via `security.py`
+- `pseudonymize_text` SHA256-hashes question content before storing in telemetry
+- `redact_sensitive_text` strips common API key patterns (`sk-*`, `AIza*`, `xoxb-*`) from logs
+- For enterprise use, private LLM deployment (local Ollama) is recommended
 
-Recommended stack:
-- LangChain
-- LlamaIndex
-- ChromaDB
-- FAISS
+## 9. Known Limitations
 
-Goal: agents reason using actual evidence rather than only prompts.
-
-### Upgrade 2 — Weighted Agent Voting
-Agents should output structured responses:
-- Recommendation
-- Confidence
-- RiskScore
-
-Then aggregate:
-
-```text
-CouncilConfidence = weighted_average(agent_confidence)
-```
-
-Future extension: agent weighting based on domain expertise.
-
-### Upgrade 3 — Agent Memory
-Persist past council decisions.
-
-Potential implementation:
-- SQLite
-- Redis
-- Postgres
-
-Example use: “What did the council previously decide about Wiz?”
-
-### Upgrade 4 — Telegram Interface
-Allow mobile interaction.
-
-Example flow:
-
-```text
-/council should we adopt Wiz?
-Telegram bot → council.py → response
-```
-
-### Upgrade 5 — Local Model Support
-Allow running agents on local models.
-
-Recommended stack:
-- Ollama
-- Llama 3
-- Mixtral
-- DeepSeek
-
-Benefits:
-- privacy
-- no API costs
-- faster local inference
-
-### Upgrade 6 — Visualization Dashboard
-Build a UI showing:
-- agent disagreements
-- risk scoring
-- consensus strength
-
-Possible stack:
-- Streamlit
-- NextJS
-- FastAPI
-
-### Upgrade 7 — Council Expansion
-Future council members:
-- Cloud Architect — infrastructure decisions.
-- Threat Intelligence Analyst — adversary modeling.
-- Compliance Officer — regulatory mapping.
-- AI Safety Officer — AI governance review.
-
-## 9. Security Considerations
-
-This system may analyze sensitive data.
-
-Recommended controls:
-- API key isolation
-- prompt redaction
-- model response logging
-- rate limiting
-
-If used in enterprise environments, private LLM deployment is recommended.
+- **RAG uses TF-IDF**, not dense vector embeddings. Semantic similarity is limited. For production, consider ChromaDB or FAISS with embedding models.
+- **No retry logic** on individual LLM calls. A transient API error in an agent fails that agent's response silently (falls back to "Unparsed" in voting).
+- **Memory context is limited to 3 recent decisions** by default. The `get_recent(limit=3)` call in `council.py` can be adjusted.
+- **Telegram response truncated at 4096 characters** (Telegram API limit). Long chairman decisions get cut off.
 
 ## 10. Long-Term Vision
 
@@ -260,42 +150,10 @@ Use cases:
 
 The goal is structured multi-perspective reasoning, not single-model answers.
 
-## 11. Immediate Next Development Task
+## 11. Priority Future Upgrades
 
-Next development milestone: **RAG Evidence Injection**.
-
-Steps:
-1. Create `/docs` ingestion pipeline.
-2. Generate embeddings.
-3. Implement semantic retrieval.
-4. Inject retrieved context into agent prompts.
-
-## 12. Optional Experimental Ideas
-
-Future advanced features:
-- Agent Disagreement Scoring — measure divergence between agents.
-- Debate Loops — allow agents to argue multiple rounds.
-- Self-Critique LLM — one agent evaluates reasoning quality.
-- Risk Heatmap — generate a matrix of impact vs likelihood.
-
-## 13. Phase 1 Implementation Status
-
-Implemented in codebase:
-- Evidence injection (RAG) pipeline via local `docs/` ingestion (`.md`, `.txt`, `.json`, `.pdf`), chunking, TF-IDF embeddings, and cosine similarity retrieval.
-- Weighted agent voting requiring structured JSON outputs (`recommendation`, `confidence`, `risk_score`) with weighted aggregation.
-- Agent memory with SQLite persistence of prior decisions and retrieval of recent decisions for prompt context.
-
-## 14. Phase 2 Implementation Status
-
-Implemented in codebase:
-- Upgrade 4 (Telegram Interface): Added `telegram_bot.py` with `/start` and `/council` command handlers to run the council and return aggregate metrics plus chairman decision.
-- Upgrade 5 (Local Model Support): Added local provider routing in `model_router.py` for Ollama-compatible endpoints, with env-based model/URL configuration.
-- Upgrade 6 (Visualization Dashboard): Added `dashboard.py` (Streamlit) to visualize council confidence, risk score, disagreement trend, and recent decisions from SQLite memory.
-
-## 15. Phase 3 Implementation Status
-
-Implemented in codebase:
-- Upgrade 7 (Council Expansion): Added new agents — Cloud Architect, Threat Intelligence Analyst, Compliance Officer, and AI Safety Officer — with tailored role prompts and voting weights.
-- Upgrade 8 (Operational Telemetry): Added telemetry event logging (`telemetry_events` table in SQLite) for council run analytics (duration, confidence, risk, evidence count, etc.).
-- Upgrade 9 (Security Controls): Added basic secret redaction helpers for log metadata and provider-level rate limiting controls to reduce abuse and accidental leakage risk.
-
+- **Dense vector RAG**: Replace TF-IDF with embedding-based retrieval (ChromaDB, FAISS)
+- **Agent retry logic**: Retry failed LLM calls with exponential backoff
+- **Debate loops**: Allow agents to argue multiple rounds before chairman synthesis
+- **Risk heatmap**: Generate impact vs likelihood matrix from agent outputs
+- **Azure OpenAI support**: Add routing target for enterprise deployments
