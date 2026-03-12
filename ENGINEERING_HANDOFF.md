@@ -277,3 +277,11 @@ Future advanced features:
 - Debate Loops — allow agents to argue multiple rounds.
 - Self-Critique LLM — one agent evaluates reasoning quality.
 - Risk Heatmap — generate a matrix of impact vs likelihood.
+
+## 13. Phase 1 Implementation Status
+
+Implemented in codebase:
+- Evidence injection (RAG) pipeline via local `docs/` ingestion (`.md`, `.txt`, `.json`, `.pdf`), chunking, TF-IDF embeddings, and cosine similarity retrieval.
+- Weighted agent voting requiring structured JSON outputs (`recommendation`, `confidence`, `risk_score`) with weighted aggregation.
+- Agent memory with SQLite persistence of prior decisions and retrieval of recent decisions for prompt context.
+
