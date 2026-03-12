@@ -20,19 +20,24 @@ _RATE_LIMIT_LOCK = threading.Lock()
 
 _openai_client = None
 _gemini_client = None
+_CLIENT_LOCK = threading.Lock()
 
 
 def _get_openai_client():
     global _openai_client
     if _openai_client is None:
-        _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        with _CLIENT_LOCK:
+            if _openai_client is None:
+                _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     return _openai_client
 
 
 def _get_gemini_client():
     global _gemini_client
     if _gemini_client is None:
-        _gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        with _CLIENT_LOCK:
+            if _gemini_client is None:
+                _gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     return _gemini_client
 
 
@@ -53,35 +58,56 @@ def _enforce_rate_limit(provider: str):
         queue.append(now)
 
 
-def ask_openai(prompt):
-    response = _get_openai_client().chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=400,
-    )
-    return response.choices[0].message.content
+def _with_retry(fn, max_retries: int = 3):
+    """Call fn(), retrying up to max_retries times with exponential backoff."""
+    delay = 2
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt == max_retries:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
-def ask_gemini(prompt):
-    response = _get_gemini_client().models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-    )
-    return response.text
+def ask_openai(prompt: str) -> str:
+    def _call():
+        response = _get_openai_client().chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800,
+        )
+        return response.choices[0].message.content
+
+    return _with_retry(_call)
 
 
-def ask_ollama(prompt, model: str = OLLAMA_MODEL):
-    response = requests.post(
-        OLLAMA_URL,
-        json={"model": model, "prompt": prompt, "stream": False},
-        timeout=120,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data.get("response", "")
+def ask_gemini(prompt: str) -> str:
+    def _call():
+        response = _get_gemini_client().models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
+        return response.text
+
+    return _with_retry(_call)
 
 
-def route_model(provider, prompt):
+def ask_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
+    def _call():
+        response = requests.post(
+            OLLAMA_URL,
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=120,
+        )
+        response.raise_for_status()
+        return response.json().get("response", "")
+
+    return _with_retry(_call)
+
+
+def route_model(provider: str, prompt: str) -> str:
     _enforce_rate_limit(provider)
 
     if provider == "claude":
