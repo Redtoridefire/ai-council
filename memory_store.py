@@ -56,3 +56,29 @@ class CouncilMemory:
             }
             for row in rows
         ]
+
+    def get_recent_for_role(self, role: str, limit: int = 2) -> List[dict]:
+        """Return the most recent decisions including that role's specific response."""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT question, responses_json, aggregate_json, created_at
+                FROM decisions
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+        result = []
+        for row in rows:
+            responses = json.loads(row[1])
+            result.append(
+                {
+                    "question": row[0],
+                    "role_response": responses.get(role, ""),
+                    "aggregate": json.loads(row[2]),
+                    "created_at": row[3],
+                }
+            )
+        return result

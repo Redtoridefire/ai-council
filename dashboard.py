@@ -62,6 +62,25 @@ def load_telemetry(limit: int = 100):
     return parsed
 
 
+def _extract_field(raw: str, field: str):
+    """Extract a numeric or string field from a structured agent JSON response."""
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and field in data:
+            return data[field]
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict) and field in data:
+                return data[field]
+        except Exception:
+            pass
+    return None
+
+
 def _extract_recommendation(raw: str) -> str:
     """Extract the recommendation field from a structured agent response."""
     try:
@@ -141,6 +160,32 @@ if telemetry:
         )
     tdf = pd.DataFrame(telemetry_rows)
     st.line_chart(tdf.set_index("created_at")[["duration_seconds", "evidence_chunk_count"]])
+
+st.subheader("Agent Risk vs Confidence — Latest Run")
+latest = records[0]
+heatmap_rows = []
+for role, raw_response in latest["responses"].items():
+    confidence = _extract_field(raw_response, "confidence")
+    risk_score = _extract_field(raw_response, "risk_score")
+    if confidence is not None and risk_score is not None:
+        try:
+            heatmap_rows.append({
+                "role": str(role),
+                "confidence": float(confidence),
+                "risk_score": float(risk_score),
+            })
+        except (TypeError, ValueError):
+            pass
+
+if heatmap_rows:
+    heatmap_df = pd.DataFrame(heatmap_rows).set_index("role")
+    st.scatter_chart(heatmap_df, x="confidence", y="risk_score", height=400)
+    st.caption(
+        "Each point is one agent. High confidence + low risk = top-left. "
+        "High risk + low confidence = bottom-right (red flag zone)."
+    )
+else:
+    st.info("No structured agent responses found for heatmap. Run a council session first.")
 
 st.subheader("Recent Decisions")
 for record in records[:5]:

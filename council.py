@@ -47,7 +47,7 @@ def _resolve_agent_models():
     return {role: force_provider for role in AGENTS}
 
 
-def run_agent(role, question, evidence_context, memory_context, agent_models):
+def run_agent(role, question, evidence_context, memory_context, agent_models, role_memory_context=""):
     if role == "AI Reasoning Red Team":
         role_instructions = "Focus on logical flaws, hidden assumptions, bias, and missing evidence."
     elif role == "Cybersecurity Red Team":
@@ -66,6 +66,12 @@ def run_agent(role, question, evidence_context, memory_context, agent_models):
     else:
         role_instructions = "Focus on your domain expertise and provide a balanced advisory perspective."
 
+    role_memory_section = (
+        f"\nYour previous responses on similar questions:\n{role_memory_context}\n"
+        if role_memory_context
+        else ""
+    )
+
     prompt = f"""
 You are the {role} in a fintech technology advisory council.
 
@@ -75,9 +81,9 @@ Question:
 Relevant evidence:
 {evidence_context}
 
-Recent council memory:
+Recent council decisions:
 {memory_context}
-
+{role_memory_section}
 Return STRICT JSON with fields:
 - recommendation
 - confidence (0-100)
@@ -92,6 +98,22 @@ Return STRICT JSON with fields:
     provider = agent_models[role]
     answer = route_model(provider, prompt)
     return role, answer
+
+
+def _run_agent_safe(role, question, evidence_context, memory_context, agent_models, role_memory_context=""):
+    """Wraps run_agent so a single agent failure never crashes the full council run."""
+    try:
+        return run_agent(role, question, evidence_context, memory_context, agent_models, role_memory_context)
+    except Exception as exc:
+        fallback = json.dumps({
+            "recommendation": "Error",
+            "confidence": 0,
+            "risk_score": 100,
+            "reasoning": f"Agent failed: {exc}",
+            "risks": "Agent unavailable",
+            "benefits": "",
+        })
+        return role, fallback
 
 
 def critique_phase(role, original_answers, question, evidence_context, agent_models):
@@ -118,15 +140,73 @@ Your task:
     return role, critique
 
 
-def chairman_decision(question, responses, critiques, aggregate, evidence_context, memory_context):
-    compiled_responses = ""
-    compiled_critiques = ""
+def _critique_phase_safe(role, original_answers, question, evidence_context, agent_models):
+    """Wraps critique_phase so a single agent failure never crashes the critique round."""
+    try:
+        return critique_phase(role, original_answers, question, evidence_context, agent_models)
+    except Exception as exc:
+        return role, f"Critique unavailable: {exc}"
 
-    for role, answer in responses.items():
-        compiled_responses += f"\n\n[{role}]\n{answer}"
 
-    for role, critique in critiques.items():
-        compiled_critiques += f"\n\n[{role}]\n{critique}"
+def _rebuttal_phase(role, critiques_text, question, evidence_context, agent_models):
+    """Agents respond to the critique round, updating their positions."""
+    prompt = f"""
+You are the {role} in a fintech technology advisory council.
+
+The council has completed an initial analysis and critique round on this question:
+{question}
+
+Relevant evidence:
+{evidence_context}
+
+Council critiques from the previous round:
+{critiques_text}
+
+In light of these critiques, provide your updated analysis.
+Return STRICT JSON with fields:
+- recommendation
+- confidence (0-100)
+- risk_score (0-100)
+- reasoning
+- risks
+- benefits
+"""
+    try:
+        provider = agent_models[role]
+        answer = route_model(provider, prompt)
+        return role, answer
+    except Exception as exc:
+        fallback = json.dumps({
+            "recommendation": "Error",
+            "confidence": 0,
+            "risk_score": 100,
+            "reasoning": f"Rebuttal failed: {exc}",
+            "risks": "Agent unavailable",
+            "benefits": "",
+        })
+        return role, fallback
+
+
+def chairman_decision(
+    question,
+    responses,
+    critiques,
+    aggregate,
+    evidence_context,
+    memory_context,
+    debate_history=None,
+    stream_callback=None,
+):
+    compiled_responses = "".join(f"\n\n[{role}]\n{answer}" for role, answer in responses.items())
+    compiled_critiques = "".join(f"\n\n[{role}]\n{critique}" for role, critique in critiques.items())
+
+    debate_section = ""
+    if debate_history:
+        for round_label, (round_responses, round_critiques) in debate_history.items():
+            debate_section += f"\n\n=== {round_label} ===\n"
+            debate_section += "".join(f"\n[{role}]\n{answer}" for role, answer in round_responses.items())
+            debate_section += f"\n\n--- {round_label} Critiques ---\n"
+            debate_section += "".join(f"\n[{role}]\n{c}" for role, c in round_critiques.items())
 
     prompt = f"""
 You are the Chairman of a fintech advisory council.
@@ -150,11 +230,11 @@ INITIAL ANALYSIS
 
 CRITIQUE PHASE
 {compiled_critiques}
-
+{debate_section}
 Provide a final recommendation, risk analysis, and confidence.
 """
 
-    return ask_claude(prompt, model=MODEL_CHAIR, max_tokens=900)
+    return ask_claude(prompt, model=MODEL_CHAIR, max_tokens=1200, stream_callback=stream_callback)
 
 
 def _format_recent_memory(memory: CouncilMemory) -> str:
@@ -172,7 +252,28 @@ def _format_recent_memory(memory: CouncilMemory) -> str:
     return "\n".join(lines)
 
 
-def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_memory.db"):
+def _format_role_memory(memory: CouncilMemory, role: str) -> str:
+    recent = memory.get_recent_for_role(role, limit=2)
+    if not recent:
+        return ""
+
+    lines = []
+    for item in recent:
+        snippet = item["role_response"][:300].strip()
+        if snippet:
+            lines.append(
+                f"- [{item['created_at']}] Q: {item['question']}\n  Your response: {snippet}..."
+            )
+    return "\n".join(lines)
+
+
+def run_council(
+    question: str,
+    docs_dir: str = "docs",
+    db_path: str = "council_memory.db",
+    debate_rounds: int = 0,
+    stream_chairman: bool = False,
+):
     start = time.time()
     agent_models = _resolve_agent_models()
     telemetry = TelemetryStore(db_path)
@@ -184,34 +285,71 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
     memory = CouncilMemory(db_path)
     memory_context = _format_recent_memory(memory)
 
+    # Phase 1: parallel agent analysis with per-role memory context
+    with ThreadPoolExecutor() as executor:
+        futures = [
+            executor.submit(
+                _run_agent_safe,
+                role, question, evidence_context, memory_context,
+                agent_models, _format_role_memory(memory, role),
+            )
+            for role in AGENTS
+        ]
+        phase1_results = [f.result() for f in futures]
+
     responses = {}
     parsed_responses = {}
-
-    with ThreadPoolExecutor() as executor:
-        results = executor.map(
-            lambda role: run_agent(role, question, evidence_context, memory_context, agent_models),
-            AGENTS,
-        )
-
-    for role, answer in results:
+    for role, answer in phase1_results:
         responses[role] = answer
         parsed_responses[role] = parse_structured_response(answer)
 
     aggregate = aggregate_weighted_scores(parsed_responses)
 
-    critiques = {}
-    compiled = ""
-    for role, answer in responses.items():
-        compiled += f"\n\n[{role}]\n{answer}"
+    # Phase 2: parallel critique
+    compiled = "".join(f"\n\n[{role}]\n{answer}" for role, answer in responses.items())
 
     with ThreadPoolExecutor() as executor:
-        critique_results = executor.map(
-            lambda role: critique_phase(role, compiled, question, evidence_context, agent_models),
-            AGENTS,
+        critique_futures = [
+            executor.submit(_critique_phase_safe, role, compiled, question, evidence_context, agent_models)
+            for role in AGENTS
+        ]
+        critique_results = [f.result() for f in critique_futures]
+
+    critiques = {role: critique for role, critique in critique_results}
+
+    # Optional debate rounds: agents rebut critiques, new critiques generated
+    debate_history = {}
+    current_critiques = critiques
+
+    for round_num in range(1, debate_rounds + 1):
+        round_label = f"Debate Round {round_num}"
+        critiques_text = "".join(
+            f"\n[{role} critique]\n{c}" for role, c in current_critiques.items()
         )
 
-    for role, critique in critique_results:
-        critiques[role] = critique
+        with ThreadPoolExecutor() as executor:
+            rebuttal_futures = [
+                executor.submit(_rebuttal_phase, role, critiques_text, question, evidence_context, agent_models)
+                for role in AGENTS
+            ]
+            rebuttal_responses = {role: answer for role, answer in [f.result() for f in rebuttal_futures]}
+
+        compiled_rebuttal = "".join(f"\n\n[{role}]\n{answer}" for role, answer in rebuttal_responses.items())
+
+        with ThreadPoolExecutor() as executor:
+            new_critique_futures = [
+                executor.submit(_critique_phase_safe, role, compiled_rebuttal, question, evidence_context, agent_models)
+                for role in AGENTS
+            ]
+            new_critiques = {role: critique for role, critique in [f.result() for f in new_critique_futures]}
+
+        debate_history[round_label] = (rebuttal_responses, new_critiques)
+        current_critiques = new_critiques
+
+    # Phase 3: Chairman synthesis (optionally streamed token-by-token)
+    if stream_chairman:
+        print("\n--- CHAIRMAN DECISION ---\n")
+    stream_cb = (lambda t: print(t, end="", flush=True)) if stream_chairman else None
 
     decision = chairman_decision(
         question,
@@ -220,7 +358,11 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
         aggregate,
         evidence_context,
         memory_context,
+        debate_history=debate_history if debate_history else None,
+        stream_callback=stream_cb,
     )
+    if stream_chairman:
+        print()  # newline after streamed output
 
     memory.save_decision(
         question=question,
@@ -240,6 +382,7 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
             "council_confidence": aggregate.get("council_confidence"),
             "council_risk_score": aggregate.get("council_risk_score"),
             "leading_recommendation": aggregate.get("leading_recommendation"),
+            "debate_rounds": debate_rounds,
         },
     )
 
@@ -249,6 +392,7 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
         "parsed_responses": {k: vars(v) for k, v in parsed_responses.items()},
         "aggregate": aggregate,
         "critiques": critiques,
+        "debate_history": debate_history,
         "decision": decision,
         "evidence_context": evidence_context,
         "memory_context": memory_context,
@@ -258,9 +402,11 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
 
 def main():
     question = input("Enter council question: ")
+    debate_rounds_input = input("Debate rounds (0 for none, default 0): ").strip()
+    debate_rounds = int(debate_rounds_input) if debate_rounds_input.isdigit() else 0
 
     print("\nRunning council analysis...\n")
-    result = run_council(question)
+    result = run_council(question, debate_rounds=debate_rounds, stream_chairman=True)
 
     for role, answer in result["responses"].items():
         print(f"\n--- {role} ---\n")
@@ -274,8 +420,18 @@ def main():
         print(f"\n--- {role} Critique ---\n")
         print(critique)
 
-    print("\n--- CHAIRMAN DECISION ---\n")
-    print(result["decision"])
+    for round_label, (rebuttals, new_critiques) in result["debate_history"].items():
+        print(f"\n=== {round_label} ===\n")
+        for role, answer in rebuttals.items():
+            print(f"\n--- {role} Rebuttal ---\n")
+            print(answer)
+        print(f"\n--- {round_label} Critiques ---\n")
+        for role, critique in new_critiques.items():
+            print(f"\n--- {role} ---\n")
+            print(critique)
+
+    # Chairman decision was already streamed live; stored copy follows
+    print("\n(Chairman decision streamed above.)")
 
 
 if __name__ == "__main__":

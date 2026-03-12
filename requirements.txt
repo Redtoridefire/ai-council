@@ -3,7 +3,11 @@ openai
 google-genai
 pypdf
 scikit-learn
+numpy
 requests
 python-telegram-bot
 streamlit
 pandas
+sentence-transformers
+fastapi
+uvicorn
