@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 
 import pandas as pd
@@ -61,11 +62,34 @@ def load_telemetry(limit: int = 100):
     return parsed
 
 
+def _extract_recommendation(raw: str) -> str:
+    """Extract the recommendation field from a structured agent response."""
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and "recommendation" in data:
+            return str(data["recommendation"]).strip().lower()
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", raw)
+    if match:
+        try:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict) and "recommendation" in data:
+                return str(data["recommendation"]).strip().lower()
+        except Exception:
+            pass
+    return ""
+
+
 def disagreement_score(responses: dict) -> float:
-    recommendations = []
-    for answer in responses.values():
-        if isinstance(answer, str):
-            recommendations.append(answer.strip().lower()[:80])
+    """Fraction of unique recommendations across agents (0 = full consensus, 1 = all differ)."""
+    recommendations = [
+        rec
+        for answer in responses.values()
+        if isinstance(answer, str)
+        for rec in [_extract_recommendation(answer)]
+        if rec
+    ]
     if not recommendations:
         return 0.0
     return round(len(set(recommendations)) / len(recommendations), 2)

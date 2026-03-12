@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from collections import defaultdict, deque
 
@@ -10,9 +11,12 @@ from openai import OpenAI
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3")
 
-RATE_LIMIT_REQUESTS = int(os.environ.get("COUNCIL_RATE_LIMIT_REQUESTS", "8"))
+# Default is 30 to comfortably support a full council run (11 agents × 2 phases + 1 chairman = 23
+# requests per provider in the worst case, all within ~60 seconds).
+RATE_LIMIT_REQUESTS = int(os.environ.get("COUNCIL_RATE_LIMIT_REQUESTS", "30"))
 RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("COUNCIL_RATE_LIMIT_WINDOW_SECONDS", "60"))
-_REQUEST_HISTORY = defaultdict(deque)
+_REQUEST_HISTORY: dict[str, deque] = defaultdict(deque)
+_RATE_LIMIT_LOCK = threading.Lock()
 
 _openai_client = None
 _gemini_client = None
@@ -33,19 +37,20 @@ def _get_gemini_client():
 
 
 def _enforce_rate_limit(provider: str):
-    now = time.time()
-    queue = _REQUEST_HISTORY[provider]
+    with _RATE_LIMIT_LOCK:
+        now = time.time()
+        queue = _REQUEST_HISTORY[provider]
 
-    while queue and now - queue[0] > RATE_LIMIT_WINDOW_SECONDS:
-        queue.popleft()
+        while queue and now - queue[0] > RATE_LIMIT_WINDOW_SECONDS:
+            queue.popleft()
 
-    if len(queue) >= RATE_LIMIT_REQUESTS:
-        wait_for = RATE_LIMIT_WINDOW_SECONDS - (now - queue[0])
-        raise RuntimeError(
-            f"Rate limit exceeded for {provider}. Try again in {max(1, int(wait_for))}s."
-        )
+        if len(queue) >= RATE_LIMIT_REQUESTS:
+            wait_for = RATE_LIMIT_WINDOW_SECONDS - (now - queue[0])
+            raise RuntimeError(
+                f"Rate limit exceeded for {provider}. Try again in {max(1, int(wait_for))}s."
+            )
 
-    queue.append(now)
+        queue.append(now)
 
 
 def ask_openai(prompt):
