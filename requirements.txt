@@ -1,3 +1,7 @@
+# Core runtime dependencies for Railway/Telegram deployment
 anthropic
 openai
 google-genai
+pypdf
+requests
+python-telegram-bot

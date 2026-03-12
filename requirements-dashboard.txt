@@ -1,0 +1,3 @@
+# Optional local dashboard dependencies
+streamlit
+pandas
