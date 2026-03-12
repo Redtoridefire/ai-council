@@ -24,16 +24,38 @@ def load_decisions(limit: int = 100):
 
     parsed = []
     for row in rows:
-        aggregate = json.loads(row[3])
-        responses = json.loads(row[4])
         parsed.append(
             {
                 "id": row[0],
                 "question": row[1],
                 "final_decision": row[2],
-                "aggregate": aggregate,
-                "responses": responses,
+                "aggregate": json.loads(row[3]),
+                "responses": json.loads(row[4]),
                 "created_at": row[5],
+            }
+        )
+    return parsed
+
+
+def load_telemetry(limit: int = 100):
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """
+            SELECT event_type, metadata_json, created_at
+            FROM telemetry_events
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    parsed = []
+    for event_type, metadata_json, created_at in rows:
+        parsed.append(
+            {
+                "event_type": event_type,
+                "metadata": json.loads(metadata_json),
+                "created_at": created_at,
             }
         )
     return parsed
@@ -50,7 +72,6 @@ def disagreement_score(responses: dict) -> float:
 
 
 records = load_decisions()
-
 if not records:
     st.warning("No decisions found yet. Run `python council.py` first to populate memory.")
     st.stop()
@@ -79,6 +100,23 @@ st.line_chart(metrics_df.set_index("created_at")[["council_confidence", "council
 
 st.subheader("Agent Disagreement Strength")
 st.bar_chart(metrics_df.set_index("created_at")[["disagreement_score"]])
+
+telemetry = load_telemetry()
+if telemetry:
+    st.subheader("Telemetry (Duration & Evidence Chunks)")
+    telemetry_rows = []
+    for row in telemetry:
+        md = row["metadata"]
+        telemetry_rows.append(
+            {
+                "created_at": row["created_at"],
+                "duration_seconds": md.get("duration_seconds", 0),
+                "evidence_chunk_count": md.get("evidence_chunk_count", 0),
+                "agent_count": md.get("agent_count", 0),
+            }
+        )
+    tdf = pd.DataFrame(telemetry_rows)
+    st.line_chart(tdf.set_index("created_at")[["duration_seconds", "evidence_chunk_count"]])
 
 st.subheader("Recent Decisions")
 for record in records[:5]:

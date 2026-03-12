@@ -22,6 +22,10 @@ AGENT_WEIGHTS = {
     "Devil's Advocate Risk Analyst": 1.0,
     "AI Reasoning Red Team": 1.0,
     "Cybersecurity Red Team": 1.4,
+    "Cloud Architect": 1.2,
+    "Threat Intelligence Analyst": 1.3,
+    "Compliance Officer": 1.2,
+    "AI Safety Officer": 1.2,
 }
 
 

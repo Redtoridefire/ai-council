@@ -13,6 +13,9 @@ Multi-agent AI decision engine using Claude, OpenAI, Gemini, and local model rou
 - Telegram bot interface (`/council <question>`)
 - Local model support via Ollama-compatible HTTP endpoint
 - Streamlit dashboard for confidence/risk/disagreement trends
+- Expanded council roles (Cloud Architect, Threat Intelligence Analyst, Compliance Officer, AI Safety Officer)
+- Built-in provider rate limiting and telemetry event logging
+- Prompt/log redaction helpers for basic secret hygiene
 
 ## Run CLI
 ```bash
@@ -40,6 +43,12 @@ python council.py
 streamlit run dashboard.py
 ```
 
+## Security + Rate Limit Controls (Phase 3)
+```bash
+export COUNCIL_RATE_LIMIT_REQUESTS=8
+export COUNCIL_RATE_LIMIT_WINDOW_SECONDS=60
+```
+
 ## Optional evidence folder
 Place evidence files in `docs/` for retrieval at runtime, for example:
 
@@ -58,6 +67,8 @@ docs/
 - `COUNCIL_FORCE_PROVIDER` (optional, e.g., `ollama`)
 - `OLLAMA_URL` (optional local endpoint)
 - `OLLAMA_MODEL` (optional local model name)
+- `COUNCIL_RATE_LIMIT_REQUESTS` (optional)
+- `COUNCIL_RATE_LIMIT_WINDOW_SECONDS` (optional)
 
 ## Documentation
 - [Engineering Handoff](ENGINEERING_HANDOFF.md)

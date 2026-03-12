@@ -1,11 +1,14 @@
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from claude_client import MODEL_CHAIR, ask_claude
 from memory_store import CouncilMemory
 from model_router import route_model
 from rag import EvidenceRetriever, format_evidence_for_prompt
+from security import pseudonymize_text, redact_sensitive_text
+from telemetry import TelemetryStore
 from voting import aggregate_weighted_scores, parse_structured_response
 
 AGENTS = [
@@ -16,6 +19,10 @@ AGENTS = [
     "Devil's Advocate Risk Analyst",
     "AI Reasoning Red Team",
     "Cybersecurity Red Team",
+    "Cloud Architect",
+    "Threat Intelligence Analyst",
+    "Compliance Officer",
+    "AI Safety Officer",
 ]
 
 DEFAULT_AGENT_MODELS = {
@@ -26,6 +33,10 @@ DEFAULT_AGENT_MODELS = {
     "Devil's Advocate Risk Analyst": "openai",
     "AI Reasoning Red Team": "claude",
     "Cybersecurity Red Team": "openai",
+    "Cloud Architect": "openai",
+    "Threat Intelligence Analyst": "claude",
+    "Compliance Officer": "claude",
+    "AI Safety Officer": "claude",
 }
 
 
@@ -38,56 +49,24 @@ def _resolve_agent_models():
 
 def run_agent(role, question, evidence_context, memory_context, agent_models):
     if role == "AI Reasoning Red Team":
-        prompt = f"""
-You are an adversarial AI reasoning expert.
-
-Question:
-{question}
-
-Relevant evidence:
-{evidence_context}
-
-Recent council memory:
-{memory_context}
-
-Return STRICT JSON with fields:
-- recommendation
-- confidence (0-100)
-- risk_score (0-100)
-- reasoning
-- risks
-- benefits
-
-Focus on logical flaws, hidden assumptions, bias, and missing evidence.
-"""
-
+        role_instructions = "Focus on logical flaws, hidden assumptions, bias, and missing evidence."
     elif role == "Cybersecurity Red Team":
-        prompt = f"""
-You are a cybersecurity offensive operator.
-
-Question:
-{question}
-
-Relevant evidence:
-{evidence_context}
-
-Recent council memory:
-{memory_context}
-
-Return STRICT JSON with fields:
-- recommendation
-- confidence (0-100)
-- risk_score (0-100)
-- reasoning
-- risks
-- benefits
-
-Identify attack paths, exploitation scenarios, privilege escalation,
-and architecture weaknesses.
-"""
-
+        role_instructions = (
+            "Identify attack paths, exploitation scenarios, privilege escalation, "
+            "and architecture weaknesses."
+        )
+    elif role == "Cloud Architect":
+        role_instructions = "Focus on infrastructure resilience, scalability, and cloud design tradeoffs."
+    elif role == "Threat Intelligence Analyst":
+        role_instructions = "Focus on adversary behavior, threat trends, and threat likelihoods."
+    elif role == "Compliance Officer":
+        role_instructions = "Focus on compliance mappings, audit obligations, and control gaps."
+    elif role == "AI Safety Officer":
+        role_instructions = "Focus on AI governance, misuse risk, and model safety controls."
     else:
-        prompt = f"""
+        role_instructions = "Focus on your domain expertise and provide a balanced advisory perspective."
+
+    prompt = f"""
 You are the {role} in a fintech technology advisory council.
 
 Question:
@@ -106,6 +85,8 @@ Return STRICT JSON with fields:
 - reasoning
 - risks
 - benefits
+
+{role_instructions}
 """
 
     provider = agent_models[role]
@@ -192,7 +173,9 @@ def _format_recent_memory(memory: CouncilMemory) -> str:
 
 
 def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_memory.db"):
+    start = time.time()
     agent_models = _resolve_agent_models()
+    telemetry = TelemetryStore(db_path)
 
     retriever = EvidenceRetriever.from_docs_dir(docs_dir)
     evidence_chunks = retriever.retrieve(question, top_k=4)
@@ -244,6 +227,20 @@ def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_m
         final_decision=decision,
         aggregate=aggregate,
         responses=responses,
+    )
+
+    telemetry.log_event(
+        "council_run_completed",
+        {
+            "question_hash": pseudonymize_text(question),
+            "question_preview": redact_sensitive_text(question[:120]),
+            "agent_count": len(AGENTS),
+            "evidence_chunk_count": len(evidence_chunks),
+            "duration_seconds": round(time.time() - start, 2),
+            "council_confidence": aggregate.get("council_confidence"),
+            "council_risk_score": aggregate.get("council_risk_score"),
+            "leading_recommendation": aggregate.get("leading_recommendation"),
+        },
     )
 
     return {

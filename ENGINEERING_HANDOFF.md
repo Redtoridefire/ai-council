@@ -292,3 +292,10 @@ Implemented in codebase:
 - Upgrade 5 (Local Model Support): Added local provider routing in `model_router.py` for Ollama-compatible endpoints, with env-based model/URL configuration.
 - Upgrade 6 (Visualization Dashboard): Added `dashboard.py` (Streamlit) to visualize council confidence, risk score, disagreement trend, and recent decisions from SQLite memory.
 
+## 15. Phase 3 Implementation Status
+
+Implemented in codebase:
+- Upgrade 7 (Council Expansion): Added new agents — Cloud Architect, Threat Intelligence Analyst, Compliance Officer, and AI Safety Officer — with tailored role prompts and voting weights.
+- Upgrade 8 (Operational Telemetry): Added telemetry event logging (`telemetry_events` table in SQLite) for council run analytics (duration, confidence, risk, evidence count, etc.).
+- Upgrade 9 (Security Controls): Added basic secret redaction helpers for log metadata and provider-level rate limiting controls to reduce abuse and accidental leakage risk.
+
