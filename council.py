@@ -1,4 +1,5 @@
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 from claude_client import MODEL_CHAIR, ask_claude
@@ -17,7 +18,7 @@ AGENTS = [
     "Cybersecurity Red Team",
 ]
 
-AGENT_MODELS = {
+DEFAULT_AGENT_MODELS = {
     "Chief Information Security Officer": "claude",
     "Security Engineer": "openai",
     "Technology Lawyer": "claude",
@@ -28,7 +29,14 @@ AGENT_MODELS = {
 }
 
 
-def run_agent(role, question, evidence_context, memory_context):
+def _resolve_agent_models():
+    force_provider = os.environ.get("COUNCIL_FORCE_PROVIDER")
+    if not force_provider:
+        return DEFAULT_AGENT_MODELS
+    return {role: force_provider for role in AGENTS}
+
+
+def run_agent(role, question, evidence_context, memory_context, agent_models):
     if role == "AI Reasoning Red Team":
         prompt = f"""
 You are an adversarial AI reasoning expert.
@@ -100,12 +108,12 @@ Return STRICT JSON with fields:
 - benefits
 """
 
-    provider = AGENT_MODELS[role]
+    provider = agent_models[role]
     answer = route_model(provider, prompt)
     return role, answer
 
 
-def critique_phase(role, original_answers, question, evidence_context):
+def critique_phase(role, original_answers, question, evidence_context, agent_models):
     prompt = f"""
 You are the {role} reviewing the council's answers.
 
@@ -124,7 +132,7 @@ Your task:
 3. Highlight contradictions
 """
 
-    provider = AGENT_MODELS[role]
+    provider = agent_models[role]
     critique = route_model(provider, prompt)
     return role, critique
 
@@ -183,37 +191,30 @@ def _format_recent_memory(memory: CouncilMemory) -> str:
     return "\n".join(lines)
 
 
-def main():
-    question = input("Enter council question: ")
+def run_council(question: str, docs_dir: str = "docs", db_path: str = "council_memory.db"):
+    agent_models = _resolve_agent_models()
 
-    retriever = EvidenceRetriever.from_docs_dir("docs")
+    retriever = EvidenceRetriever.from_docs_dir(docs_dir)
     evidence_chunks = retriever.retrieve(question, top_k=4)
     evidence_context = format_evidence_for_prompt(evidence_chunks)
 
-    memory = CouncilMemory("council_memory.db")
+    memory = CouncilMemory(db_path)
     memory_context = _format_recent_memory(memory)
 
     responses = {}
     parsed_responses = {}
 
-    print("\nRunning council analysis...\n")
-
     with ThreadPoolExecutor() as executor:
         results = executor.map(
-            lambda role: run_agent(role, question, evidence_context, memory_context), AGENTS
+            lambda role: run_agent(role, question, evidence_context, memory_context, agent_models),
+            AGENTS,
         )
 
     for role, answer in results:
-        print(f"\n--- {role} ---\n")
-        print(answer)
         responses[role] = answer
         parsed_responses[role] = parse_structured_response(answer)
 
     aggregate = aggregate_weighted_scores(parsed_responses)
-    print("\n--- WEIGHTED COUNCIL METRICS ---\n")
-    print(json.dumps(aggregate, indent=2))
-
-    print("\nRunning critique phase...\n")
 
     critiques = {}
     compiled = ""
@@ -222,15 +223,13 @@ def main():
 
     with ThreadPoolExecutor() as executor:
         critique_results = executor.map(
-            lambda role: critique_phase(role, compiled, question, evidence_context), AGENTS
+            lambda role: critique_phase(role, compiled, question, evidence_context, agent_models),
+            AGENTS,
         )
 
     for role, critique in critique_results:
-        print(f"\n--- {role} Critique ---\n")
-        print(critique)
         critiques[role] = critique
 
-    print("\n--- CHAIRMAN DECISION ---\n")
     decision = chairman_decision(
         question,
         responses,
@@ -239,7 +238,6 @@ def main():
         evidence_context,
         memory_context,
     )
-    print(decision)
 
     memory.save_decision(
         question=question,
@@ -247,6 +245,39 @@ def main():
         aggregate=aggregate,
         responses=responses,
     )
+
+    return {
+        "question": question,
+        "responses": responses,
+        "parsed_responses": {k: vars(v) for k, v in parsed_responses.items()},
+        "aggregate": aggregate,
+        "critiques": critiques,
+        "decision": decision,
+        "evidence_context": evidence_context,
+        "memory_context": memory_context,
+        "agent_models": agent_models,
+    }
+
+
+def main():
+    question = input("Enter council question: ")
+    result = run_council(question)
+
+    print("\nRunning council analysis...\n")
+    for role, answer in result["responses"].items():
+        print(f"\n--- {role} ---\n")
+        print(answer)
+
+    print("\n--- WEIGHTED COUNCIL METRICS ---\n")
+    print(json.dumps(result["aggregate"], indent=2))
+
+    print("\nRunning critique phase...\n")
+    for role, critique in result["critiques"].items():
+        print(f"\n--- {role} Critique ---\n")
+        print(critique)
+
+    print("\n--- CHAIRMAN DECISION ---\n")
+    print(result["decision"])
 
 
 if __name__ == "__main__":

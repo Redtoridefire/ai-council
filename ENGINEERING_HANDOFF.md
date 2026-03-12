@@ -285,3 +285,10 @@ Implemented in codebase:
 - Weighted agent voting requiring structured JSON outputs (`recommendation`, `confidence`, `risk_score`) with weighted aggregation.
 - Agent memory with SQLite persistence of prior decisions and retrieval of recent decisions for prompt context.
 
+## 14. Phase 2 Implementation Status
+
+Implemented in codebase:
+- Upgrade 4 (Telegram Interface): Added `telegram_bot.py` with `/start` and `/council` command handlers to run the council and return aggregate metrics plus chairman decision.
+- Upgrade 5 (Local Model Support): Added local provider routing in `model_router.py` for Ollama-compatible endpoints, with env-based model/URL configuration.
+- Upgrade 6 (Visualization Dashboard): Added `dashboard.py` (Streamlit) to visualize council confidence, risk score, disagreement trend, and recent decisions from SQLite memory.
+
