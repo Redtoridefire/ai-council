@@ -1,3 +1,9 @@
 anthropic
 openai
 google-genai
+pypdf
+scikit-learn
+requests
+python-telegram-bot
+streamlit
+pandas
