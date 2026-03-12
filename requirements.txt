@@ -8,6 +8,5 @@ requests
 python-telegram-bot
 streamlit
 pandas
-sentence-transformers
 fastapi
 uvicorn
